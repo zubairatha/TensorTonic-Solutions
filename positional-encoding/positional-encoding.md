@@ -1,3 +1,51 @@
+## My understanding
+
+### 1. Why attention needs position
+
+A token embedding tells the model **what the token is**. A positional encoding tells it **where the token is**.
+
+Take `dog sees dog`. Both occurrences of `dog` start with the same token embedding. In plain self-attention, `sees` would give them the same score if all it had were those identical embeddings. The original Transformer adds the position vector for `0` to the first `dog` and the vector for `2` to the second. Now the two inputs differ, so attention can learn to treat them differently.
+
+### 2. One position, two clock hands
+
+I picture sinusoidal encoding as **clock hands turning at different speeds**. Each hand gives me two numbers, the sine and cosine of its angle. With `d_model = 4`, I need two hands to fill four columns.
+
+- The **fast hand** uses the angle `p` at position `p`.
+- The **slow hand** uses the angle `p / 100` when the base is `10000`.
+
+So at position `2`, the angles are `2` and `0.02`. Taking sine and cosine of each gives the position vector `[0.91, -0.42, 0.02, 1.00]`, rounded to two decimals.
+
+| Token position ↓ | Dim 0 · Fast sine | Dim 1 · Fast cosine | Dim 2 · Slow sine | Dim 3 · Slow cosine |
+|---|---:|---:|---:|---:|
+| 0 | 0.00 | 1.00 | 0.00 | 1.00 |
+| 1 | 0.84 | 0.54 | 0.01 | 1.00 |
+| 2 | 0.91 | −0.42 | 0.02 | 1.00 |
+
+This is how I read the heatmap. **Across a row** is one token’s whole position vector. **Down a column** shows how one number changes as I advance through the sequence. The nearly solid stripes on the right come from the slow hands barely moving over the positions shown. A larger base makes the later hands turn even more slowly. The first hand always turns by one radian per token.
+
+### 3. What the different speeds buy me
+
+**Nearby positions** can look similar in the slow columns even when they look quite different in the fast ones. The fast hand also comes back around quickly, so the slow hand gives the model another reading over a longer stretch.
+
+**Relative position** is a separate idea. Going from position `1` to `3` turns each hand by the same amount as going from `6` to `8`. Both moves are `+2` tokens. That’s what the paper means by a *linear function*. For each complete pair, I can get the new sine and cosine by mixing the old two values with weights that depend only on the gap. The vector describes an absolute position, and the way it changes gives attention a pattern for learning about offsets.
+
+### 4. How the NumPy solution matches the picture
+
+I’m building two grids. The first holds **one angle per position and hand**. The second holds **one sine or cosine value per output column**.
+
+1. `positions` is a column of shape `(seq_len, 1)`. `divisors` is a 1D array of shape `(num_pairs,)`, with one divisor per hand.
+2. `positions / divisors` gives a grid of shape `(seq_len, num_pairs)`. Broadcasting treats the divisors like a row, so **every position gets divided by every divisor**.
+3. In the final grid, `pe[:, 0::2]` fills columns `0, 2, 4, ...` with sine and `pe[:, 1::2]` fills columns `1, 3, 5, ...` with cosine. With `d_model = 5`, there are three sine slots and two cosine slots, so I take cosine of only the first two angle columns.
+
+### 5. How the alternatives fit
+
+- **Fixed sinusoidal** calculates each position’s vector from a formula. I can calculate one for a position beyond the training length. How well the model uses that position is a separate question.
+- **Learned absolute** looks up a vector for each position in a table filled in during training. A position beyond the table has no entry until the table is extended.
+- **Relative** gives attention information about the gap directly, like “two tokens to my left.”
+- **For images**, the same idea works with patches. A 2D sinusoidal encoding can use half the vector for the patch’s row and half for its column. Moving down changes the row half. Moving right changes the column half.
+
+---
+
 ## The Position Problem in Transformers
 
 Self-attention, the core mechanism in transformers, treats the input as a set. If you shuffle the tokens, the attention outputs just shuffle correspondingly. The model has no inherent sense of word order.
